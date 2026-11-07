@@ -1,0 +1,396 @@
+# Throwaway research: can GitHub-hosted Windows and macOS runners run visual-check's browser container, and what
+# else runs there? Builds a public Storybook (storybookjs/mealdrop at a pinned commit, plus hazard stories) once, then:
+# - linux: the reference, raw CDP Chromium and Playwright WebKit in the Playwright image, live and offline;
+# - probe: what each runner image offers for Linux containers;
+# - host: file names, git round trips, changed files, Fallow and Storybook start and stop, with no Docker;
+# - windows-docker: Linux containers through WSL2, the same captures from a Windows host, and container cleanup;
+# - macos-docker: Colima, Docker Desktop, OrbStack and docker/setup-docker-action on Intel and arm64 runners;
+# - parity: Windows and macOS host snapshots against the Linux runners'.
+name: probe
+
+on:
+  push:
+    branches: [research/windows-macos-ci]
+
+permissions: {}
+
+env:
+  MEALDROP_SHA: 5ee1b204675b2d9eaf64fb33424384477946f369
+  IMAGE: mcr.microsoft.com/playwright@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+  TAG: mcr.microsoft.com/playwright:v1.64.1-noble
+  FALLOW: fallow@3.38.1
+  PASSES: "5"
+  WK_PASSES: "3"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build the Storybook
+        run: |
+          git init -q mealdrop && cd mealdrop
+          git fetch -q --depth 1 https://github.com/storybookjs/mealdrop.git "$MEALDROP_SHA" && git checkout -q FETCH_HEAD
+          mkdir -p src/vc-hazards && cp ../harness/stories/Hazards.stories.tsx src/vc-hazards/
+          node .yarn/releases/yarn-4.18.0.cjs install --immutable
+          node .yarn/releases/yarn-4.18.0.cjs build-storybook
+          tar -C build -cf ../storybook.tar storybook && cd .. && sha256sum storybook.tar | tee storybook.tar.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: storybook
+          path: |
+            storybook.tar
+            storybook.tar.sha256
+          retention-days: 14
+
+  probe:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025, windows-11-arm, macos-15, macos-26, macos-15-intel, macos-26-intel]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Probe (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: harness/windows-probe.ps1 | Tee-Object probe.txt
+      - name: Probe (macOS)
+        if: runner.os == 'macOS'
+        run: bash harness/macos-probe.sh | tee probe.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-${{ matrix.os }}
+          path: probe.txt
+          retention-days: 14
+
+  linux:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: storybook
+          path: sb
+      - name: Unpack
+        run: (cd sb && sha256sum -c storybook.tar.sha256) && tar -C sb -xf sb/storybook.tar
+      - name: Install the harness (JS only)
+        working-directory: harness
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Pull image by digest
+        run: docker pull -q --platform linux/amd64 "$IMAGE" && docker tag "$IMAGE" "$TAG"
+      - name: Capture
+        run: |
+          OUT="$PWD/out/linux-${{ matrix.job }}"; mkdir -p "$OUT"
+          { nproc; lscpu | grep -E 'Model name'; free -m | head -2; docker version --format '{{.Server.Version}}'; } > "$OUT/machine.txt"
+          node harness/serve.mjs "$PWD/sb/storybook" 6400 127.0.0.1 > "$OUT/serve.log" 2>&1 &
+          until grep -q serving "$OUT/serve.log" 2>/dev/null; do sleep 0.1; done
+          node harness/arms.mjs http://127.0.0.1:6400 "$OUT/runs" "$PASSES" \
+            "chromium-live=--driver raw --network host" "chromium-offline=--driver raw --network host --offline" | tee "$OUT/runs.log"
+          node harness/arms.mjs http://127.0.0.1:6400 "$OUT/runs" "$WK_PASSES" \
+            "webkit-live=--driver pw-webkit --pw-mode attached" "webkit-offline=--driver pw-webkit --pw-mode attached --offline" | tee -a "$OUT/runs.log"
+          node harness/dedupe.mjs "$OUT/runs" "$OUT/snapshots"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-${{ matrix.job }}
+          path: |
+            out/linux-${{ matrix.job }}/*.txt
+            out/linux-${{ matrix.job }}/*.log
+            out/linux-${{ matrix.job }}/runs/*/*/run.json
+            out/linux-${{ matrix.job }}/runs/*/*.err
+            out/linux-${{ matrix.job }}/snapshots/
+          retention-days: 14
+
+  # File handling, Fallow and Storybook start and stop: everything that runs without the browser container
+  host:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, windows-2025, macos-26, macos-15-intel]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: storybook
+          path: sb
+      - name: Unpack
+        run: tar -C sb -xf sb/storybook.tar
+      - name: Files
+        run: |
+          mkdir -p out && git config --list --show-origin > out/git-config.txt
+          node harness/files-check.mjs sb/storybook/index.json "$RUNNER_TEMP/files" | tee out/files.json
+      - name: Mealdrop checkout and install
+        run: |
+          git init -q mealdrop && cd mealdrop
+          git fetch -q --depth 1 https://github.com/storybookjs/mealdrop.git "$MEALDROP_SHA" && git checkout -q FETCH_HEAD
+          corepack enable
+          start=$(date +%s); yarn install --immutable > ../out/yarn-install.log 2>&1; echo "yarn install exit $? in $(( $(date +%s) - start )) s" | tee -a ../out/summary.txt
+      - name: Fallow
+        working-directory: mealdrop
+        run: |
+          start=$(date +%s)
+          npx -y "$FALLOW" viz --viz-format dot > ../out/fallow.dot 2> ../out/fallow.err; echo "fallow exit $? in $(( $(date +%s) - start )) s" | tee -a ../out/summary.txt
+          echo "lines $(wc -l < ../out/fallow.dot), with backslash $(grep -c -F "\\" ../out/fallow.dot), CRLF $(grep -c $'\r' ../out/fallow.dot)" | tee -a ../out/summary.txt
+          head -c 600 ../out/fallow.dot; echo
+          node -e "console.log(require('fs').readFileSync('../out/fallow.dot','utf8').match(/\"[^\"]*src[^\"]*\"/g)?.slice(0,5))" | tee -a ../out/summary.txt
+      - name: Storybook start and stop
+        run: node harness/startstop-check.mjs "$PWD/mealdrop" | tee out/startstop.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-${{ matrix.os }}
+          path: out/
+          retention-days: 14
+
+  # Linux containers from a Windows host: docker.io in WSL2, with the runner's docker.exe as the client over TCP
+  windows-docker:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, mode: nat, full: true }
+          - { os: windows-2025, mode: mirrored, full: true }
+          - { os: windows-2022, mode: nat, full: false }
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: storybook
+          path: sb
+      - name: Unpack
+        run: tar -C sb -xf sb/storybook.tar
+      - name: Install the harness (JS only)
+        working-directory: harness
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: WSL2 and Docker
+        id: wsl
+        timeout-minutes: 25
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          harness/windows-wsl-docker.ps1 -Mode ${{ matrix.mode }} *>&1 | Tee-Object out/wsl-setup.txt
+      - name: Pull image by digest
+        if: matrix.full
+        run: |
+          $t = [Diagnostics.Stopwatch]::StartNew()
+          docker pull -q --platform linux/amd64 $env:IMAGE; docker tag $env:IMAGE $env:TAG
+          "pull took $([math]::Round($t.Elapsed.TotalSeconds)) s" | Tee-Object -Append out/wsl-setup.txt
+      - name: Probes, captures and kill checks
+        if: matrix.full
+        run: harness/windows-capture.ps1 -Out "$PWD/out" -Passes $env:PASSES -WkPasses $env:WK_PASSES
+      - name: dockerd log
+        if: always()
+        run: Copy-Item "$env:RUNNER_TEMP/dockerd.log" out/ -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-${{ matrix.os }}-${{ matrix.mode }}
+          path: |
+            out/*.txt
+            out/*.log
+            out/runs/*/*/run.json
+            out/runs/*/*.err
+            out/kill-*/
+            out/snapshots/
+          retention-days: 14
+
+  # WSL containers (wslc.exe): no distro and no Docker
+  windows-wslc:
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: storybook
+          path: sb
+      - name: Unpack
+        run: tar -C sb -xf sb/storybook.tar
+      - name: Install the harness (JS only)
+        working-directory: harness
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: wslc
+        timeout-minutes: 45
+        run: harness/windows-wslc.ps1 -Out "$PWD/out" *>&1 | Tee-Object wslc.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-wslc
+          path: |
+            wslc.txt
+            out/*.txt
+            out/*.log
+            out/runs/*/*/run.json
+            out/runs/*/*.err
+            out/snapshots/
+          retention-days: 14
+
+  # Linux containers from a macOS host: Intel runners can run a VM, arm64 runners have no nested virtualization
+  macos-docker:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15-intel, runtime: setup-docker-action, passes: "5", wk: "3", extra: "--memory 5g" }
+          - { os: macos-26-intel, runtime: setup-docker-action, passes: "5", wk: "3", extra: "--memory 5g" }
+          - { os: macos-15-intel, runtime: colima, passes: "5", wk: "3", extra: "--memory 5g" }
+          - { os: macos-15-intel, runtime: docker-desktop, passes: "3", wk: "2", extra: "--memory 5g" }
+          - { os: macos-15-intel, runtime: orbstack, passes: "3", wk: "2", extra: "--memory 5g" }
+          - { os: macos-26, runtime: setup-docker-action, passes: "1", wk: "0", extra: "--memory 4g" }
+          - { os: macos-26, runtime: colima-x86_64-tcg, passes: "1", wk: "0", extra: "--memory 4g --timeout 120000 --only components-button--default,components-badge--default,components-footer--default,components-header--default,components-restaurantcard--default" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: storybook
+          path: sb
+      - name: Unpack
+        run: tar -C sb -xf sb/storybook.tar
+      - name: Install the harness (JS only)
+        working-directory: harness
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Probe
+        run: mkdir -p out && bash harness/macos-probe.sh | tee out/probe.txt
+      - name: docker/setup-docker-action
+        if: matrix.runtime == 'setup-docker-action'
+        continue-on-error: true
+        timeout-minutes: 30
+        uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6 # v5.7.0
+        env:
+          LIMA_START_ARGS: --cpus 4 --memory 10
+      - name: Start ${{ matrix.runtime }}
+        if: matrix.runtime != 'setup-docker-action'
+        continue-on-error: true
+        timeout-minutes: 30
+        run: bash harness/macos-runtime.sh ${{ matrix.runtime }} 2>&1 | tee out/runtime.txt
+      - name: Docker up?
+        id: up
+        run: |
+          if docker info > /dev/null 2>&1; then echo ok=true >> "$GITHUB_OUTPUT"; docker info --format '{{.ServerVersion}} {{.OperatingSystem}} {{.NCPU}} CPUs {{.MemTotal}}' | tee -a out/runtime.txt
+          else echo ok=false >> "$GITHUB_OUTPUT"; echo "no Docker daemon" | tee -a out/runtime.txt; fi
+          ls ~/.lima 2>/dev/null && tail -50 ~/.lima/*/ha.stderr.log 2>/dev/null | grep -iE 'hvf|accel|tcg|error' | tail -10 | tee -a out/runtime.txt; true
+      - name: Probes, captures and kill checks
+        if: steps.up.outputs.ok == 'true'
+        timeout-minutes: 120
+        run: bash harness/macos-capture.sh "$PWD/out" "${{ matrix.passes }}" "${{ matrix.wk }}" ${{ matrix.extra }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-${{ matrix.os }}-${{ matrix.runtime }}
+          path: |
+            out/*.txt
+            out/*.log
+            out/runs/*/*/run.json
+            out/runs/*/*.err
+            out/kill/
+            out/snapshots/
+          retention-days: 14
+
+  parity:
+    needs: [linux, windows-docker, windows-wslc, macos-docker]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install the harness (JS only)
+        working-directory: harness
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Compare
+        run: |
+          refs=(); hosts=()
+          for d in art/linux-*/snapshots; do refs+=(--ref "$d"); done
+          for d in art/win-*/snapshots art/mac-*/snapshots; do [ -f "$d/manifest.json" ] && hosts+=(--host "$(basename "$(dirname "$d")")=$d"); done
+          node harness/parity.mjs "${refs[@]}" "${hosts[@]}" --json parity.json | tee parity.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity
+          path: |
+            parity.txt
+            parity.json
+          retention-days: 14
