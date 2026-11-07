@@ -117,7 +117,8 @@ for (const [label, attr] of [['textAutoCrlf', '* text=auto eol=crlf\n'], ['force
   run('git', ['clone', '-q', r2, dst])
   report[`attr_${label}`] = { pngIntact: existsSync(path.join(dst, 'baseline.png')) && readFileSync(path.join(dst, 'baseline.png')).equals(png), jsonHasCrlf: existsSync(path.join(dst, 'a.json')) && readFileSync(path.join(dst, 'a.json'), 'utf8').includes('\r\n') }
 }
-report.cloneDefault_jsonHasCrlf = readFileSync(path.join(work, 'clone-default', 'visual-check.config.json'), 'utf8').includes('\r\n')
+const cfgClone = path.join(work, 'clone-default', 'visual-check.config.json')
+report.cloneDefault_jsonHasCrlf = existsSync(cfgClone) ? readFileSync(cfgClone, 'utf8').includes('\r\n') : 'not checked out'
 
 // ---- 3. changed files ----
 const src = path.join(repo, 'src', 'components', 'Button')

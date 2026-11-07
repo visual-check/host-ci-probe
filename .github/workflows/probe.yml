@@ -52,6 +52,7 @@ jobs:
           retention-days: 14
 
   probe:
+    if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:probe') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     permissions:
@@ -79,6 +80,7 @@ jobs:
           retention-days: 14
 
   linux:
+    if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:linux') }}
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -131,6 +133,7 @@ jobs:
 
   # File handling, Fallow and Storybook start and stop: everything that runs without the browser container
   host:
+    if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:host') }}
     needs: build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -185,6 +188,7 @@ jobs:
 
   # Linux containers from a Windows host: docker.io in WSL2, with the runner's docker.exe as the client over TCP
   windows-docker:
+    if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:win') }}
     needs: build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
@@ -223,17 +227,19 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           harness/windows-wsl-docker.ps1 -Mode ${{ matrix.mode }} *>&1 | Tee-Object out/wsl-setup.txt
       - name: Pull image by digest
-        if: matrix.full
+        if: matrix.full && env.WSL_MODE == matrix.mode
         run: |
           $t = [Diagnostics.Stopwatch]::StartNew()
           docker pull -q --platform linux/amd64 $env:IMAGE; docker tag $env:IMAGE $env:TAG
           "pull took $([math]::Round($t.Elapsed.TotalSeconds)) s" | Tee-Object -Append out/wsl-setup.txt
       - name: Probes, captures and kill checks
-        if: matrix.full
+        if: matrix.full && env.WSL_MODE == matrix.mode
         run: harness/windows-capture.ps1 -Out "$PWD/out" -Passes $env:PASSES -WkPasses $env:WK_PASSES
       - name: dockerd log
         if: always()
-        run: Copy-Item "$env:RUNNER_TEMP/dockerd.log" out/ -ErrorAction SilentlyContinue
+        run: |
+          wsl.exe -d Ubuntu -u root -e bash -c 'journalctl -u docker -u containerd --no-pager 2>/dev/null | tail -300; cat /var/log/dockerd.log 2>/dev/null | tail -100; dmesg | tail -60' > out/dockerd.log 2>&1
+          (wsl.exe -l -v | Out-String) -replace "`0", '' | Add-Content out/dockerd.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -249,6 +255,7 @@ jobs:
 
   # WSL containers (wslc.exe): no distro and no Docker
   windows-wslc:
+    if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:wslc') }}
     needs: build
     runs-on: windows-2025
     timeout-minutes: 60
@@ -291,6 +298,7 @@ jobs:
 
   # Linux containers from a macOS host: Intel runners can run a VM, arm64 runners have no nested virtualization
   macos-docker:
+    if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:mac') }}
     needs: build
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -362,7 +370,7 @@ jobs:
 
   parity:
     needs: [linux, windows-docker, windows-wslc, macos-docker]
-    if: always()
+    if: ${{ always() && !contains(github.event.head_commit.message, 'only:') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
