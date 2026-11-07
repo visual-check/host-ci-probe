@@ -18,7 +18,7 @@ const docker = (args) => { try { return execFileSync(DOCKER[0], dockerArgs(args)
 const running = (name) => {
   let out = docker(['ps', '-a', '--format', '{{.Names}}'])
   if (out.startsWith('ERR')) out = docker(['container', 'list', '--all'])
-  return out.split(/\r?\n/).filter((l) => l.split(/\s+/).includes(name)).length
+  return out.split(/\r?\n/).filter((l) => l.includes(name)).length
 }
 const clients = () => {
   if (!win) return execFileSync('sh', ['-c', "pgrep -fl 'docker run' | grep -c vc-kill || true"], { encoding: 'utf8' }).trim()

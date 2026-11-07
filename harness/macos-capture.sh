@@ -23,11 +23,12 @@ fi
 echo "VC_HOST_ALIAS=${VC_HOST_ALIAS:-(runtime default)}"
 node "$H/serve.mjs" "$GITHUB_WORKSPACE/sb/storybook" 6400 127.0.0.1 > "$OUT/serve.log" 2>&1 &
 until grep -q serving "$OUT/serve.log" 2>/dev/null; do sleep 0.1; done
-log 'capture arms'
-node "$H/arms.mjs" "$BASE" "$OUT/runs" "$PASSES" "chromium-live=--driver raw --network proxy ${EXTRA[*]}" "chromium-offline=--driver raw --network proxy --offline ${EXTRA[*]}" | tee -a "$OUT/runs.log"
-[ "$WK" -gt 0 ] && node "$H/arms.mjs" "$BASE" "$OUT/runs" "$WK" "webkit-live=--driver pw-webkit --pw-mode attached ${EXTRA[*]}" "webkit-offline=--driver pw-webkit --pw-mode attached --offline ${EXTRA[*]}" | tee -a "$OUT/runs.log"
 if [ "$WK" -gt 0 ]; then
   log 'kill checks'
   node "$H/kill-check.mjs" "$BASE" "$OUT/kill" --network proxy "${EXTRA[@]}" | tee -a "$OUT/kill.txt"
 fi
+log 'capture arms'
+node "$H/arms.mjs" "$BASE" "$OUT/runs" "$PASSES" "chromium-live=--driver raw --network proxy ${EXTRA[*]}" "chromium-offline=--driver raw --network proxy --offline ${EXTRA[*]}" | tee -a "$OUT/runs.log"
+[ "$WK" -gt 0 ] && node "$H/arms.mjs" "$BASE" "$OUT/runs" "$WK" "webkit-live=--driver pw-webkit --pw-mode attached ${EXTRA[*]}" "webkit-offline=--driver pw-webkit --pw-mode attached --offline ${EXTRA[*]}" | tee -a "$OUT/runs.log"
 node "$H/dedupe.mjs" "$OUT/runs" "$OUT/snapshots"
+rm -rf "$OUT"/runs/*/*/png

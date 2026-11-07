@@ -306,11 +306,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-15-intel, runtime: setup-docker-action, passes: "5", wk: "3", extra: "--memory 5g" }
-          - { os: macos-26-intel, runtime: setup-docker-action, passes: "5", wk: "3", extra: "--memory 5g" }
-          - { os: macos-15-intel, runtime: colima, passes: "5", wk: "3", extra: "--memory 5g" }
-          - { os: macos-26, runtime: setup-docker-action, passes: "1", wk: "0", extra: "--memory 4g" }
-          - { os: macos-26, runtime: colima-x86_64-tcg, passes: "1", wk: "0", extra: "--memory 4g --timeout 120000 --only components-button--default,components-badge--default,components-footer--default,components-header--default,components-restaurantcard--default" }
+          - { os: macos-15-intel, runtime: colima, passes: "2", wk: "1", extra: "--memory 5g" }
+          - { os: macos-26-intel, runtime: colima, passes: "2", wk: "1", extra: "--memory 5g" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -366,15 +363,16 @@ jobs:
 
   # Docker Desktop, the runtime most Windows and macOS developers have, on hosted runners
   docker-desktop:
+    needs: build
     if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:dd') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15-intel, macos-26-intel, windows-2025]
+        os: [windows-2025]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -382,6 +380,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: storybook
+          path: sb
+      - name: Unpack
+        if: runner.os == 'Windows'
+        run: tar -C sb -xf sb/storybook.tar
       - name: Install the harness (JS only)
         working-directory: harness
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -391,7 +397,9 @@ jobs:
         run: mkdir -p out && bash harness/docker-desktop-mac.sh 2>&1 | tee out/docker-desktop.txt
       - name: Docker Desktop (Windows)
         if: runner.os == 'Windows'
-        timeout-minutes: 45
+        timeout-minutes: 100
+        env:
+          DD_CAPTURE: "1"
         shell: pwsh
         run: New-Item -ItemType Directory -Force out | Out-Null; harness/docker-desktop-windows.ps1 *>&1 | Tee-Object out/docker-desktop.txt
       - uses: actions/upload-artifact@v4

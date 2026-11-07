@@ -27,3 +27,18 @@ if ($LASTEXITCODE) { Write-Output 'Docker Desktop: no Linux engine'; exit 0 }
 $env:VC_DOCKER = ConvertTo-Json -Compress @($cli, '--context', 'desktop-linux')
 node "$PSScriptRoot/pipe-probe.mjs" docker-desktop $cli --context desktop-linux run -i --rm --platform linux/amd64 alpine cat
 node "$PSScriptRoot/reach-probe.mjs" docker-desktop node:24-alpine host.docker.internal -
+if (-not $env:DD_CAPTURE) { exit 0 }
+# Captures and the kill check through Docker Desktop, as a Windows developer would run them: the proxy on 127.0.0.1
+$Out = "$env:GITHUB_WORKSPACE/out"
+$H = $PSScriptRoot
+& $cli --context desktop-linux pull -q --platform linux/amd64 $env:IMAGE; & $cli --context desktop-linux tag $env:IMAGE $env:TAG
+Write-Output "pulled $(At)"
+$serve = Start-Process node -ArgumentList "$H/serve.mjs", "$env:GITHUB_WORKSPACE/sb/storybook", '6400', '127.0.0.1' -RedirectStandardOutput "$Out/serve.log" -PassThru -WindowStyle Hidden
+while (-not (Select-String -Path "$Out/serve.log" -Pattern serving -Quiet -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 200 }
+$base = 'http://127.0.0.1:6400'
+node "$H/kill-check.mjs" $base "$Out/kill" --network proxy --proxy-host 127.0.0.1 | Tee-Object -Append "$Out/kill.txt"
+node "$H/arms.mjs" $base "$Out/runs" $env:PASSES 'chromium-live=--driver raw --network proxy --proxy-host 127.0.0.1' 'chromium-offline=--driver raw --network proxy --proxy-host 127.0.0.1 --offline' | Tee-Object -Append "$Out/runs.log"
+node "$H/arms.mjs" $base "$Out/runs" $env:WK_PASSES 'webkit-live=--driver pw-webkit --pw-mode attached' 'webkit-offline=--driver pw-webkit --pw-mode attached --offline' | Tee-Object -Append "$Out/runs.log"
+Stop-Process -Id $serve.Id -Force
+node "$H/dedupe.mjs" "$Out/runs" "$Out/snapshots"
+Get-ChildItem "$Out/runs" -Recurse -Directory -Filter png | Remove-Item -Recurse -Force
