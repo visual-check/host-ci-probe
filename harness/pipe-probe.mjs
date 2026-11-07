@@ -16,7 +16,12 @@ child.stdout.on('data', (c) => chunks.push(c))
 child.stderr.on('data', (c) => { err += c })
 child.stdin.on('error', () => {})
 child.on('error', (e) => { err += `spawn error ${e.code}` })
-child.stdin.end(data)
+// PIPE_KEEP_OPEN=1: close stdin only once everything came back, as a CDP session does, so a lost tail at exit
+// doesn't hide whether the stream itself is intact
+if (process.env.PIPE_KEEP_OPEN) {
+  child.stdin.write(data)
+  const t = setInterval(() => { if (chunks.reduce((n, c) => n + c.length, 0) >= data.length || performance.now() - t0 > 60_000) { clearInterval(t); child.stdin.end() } }, 50)
+} else child.stdin.end(data)
 const code = await new Promise((r) => { child.on('close', r); setTimeout(() => { child.kill(); r('timeout') }, 120_000) })
 const got = Buffer.concat(chunks)
-console.log(JSON.stringify({ label, code, sent: data.length, received: got.length, identical: got.equals(data), sentSha: sha(data), receivedSha: sha(got), firstDiffAt: got.equals(data) ? null : [...got].findIndex((b, i) => b !== data[i]), ms: Math.round(performance.now() - t0), stderr: err.trim().slice(-300) }))
+console.log(JSON.stringify({ label: `${label}${process.env.PIPE_KEEP_OPEN ? ' keep-open' : ''}`, code, sent: data.length, received: got.length, identical: got.equals(data), sentSha: sha(data), receivedSha: sha(got), firstDiffAt: got.equals(data) ? null : [...got].findIndex((b, i) => b !== data[i]), ms: Math.round(performance.now() - t0), stderr: err.trim().slice(-300) }))

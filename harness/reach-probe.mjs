@@ -2,7 +2,7 @@
 // here, one on all interfaces and one on loopback only, then fetches each from a container.
 //   node reach-probe.mjs <label> <image> <host name> [<ip for --add-host> | -] [hostnet]
 // Docker is reached through docker.ts (VC_DOCKER).
-import { execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import http from 'node:http'
 import { DOCKER, dockerArgs } from './docker.ts'
 
@@ -13,7 +13,15 @@ await serve('127.0.0.1', 6412)
 const fetchIn = (url, extra) => new Promise((r) => {
   const js = `fetch(${JSON.stringify(url)},{signal:AbortSignal.timeout(8000)}).then(async x=>console.log(x.status+' '+await x.text()),e=>console.log('ERR '+(e.cause?.code||e.name)))`
   const t0 = performance.now()
-  execFile(DOCKER[0], dockerArgs(['run', '--rm', ...extra, '--entrypoint', 'node', image, '-e', js]), { timeout: 60_000 }, (e, out, err) => r({ url, extra: extra.join(' '), result: String(out).trim() || `ERR ${String(err || e?.message).trim().slice(-200)}`, ms: Math.round(performance.now() - t0) }))
+  const c = spawn(DOCKER[0], dockerArgs(['run', '-i', '--rm', ...extra, '--entrypoint', 'node', image, '-']), { stdio: ['pipe', 'pipe', 'pipe'] })
+  let out = ''
+  let err = ''
+  c.stdout.on('data', (d) => { out += d })
+  c.stderr.on('data', (d) => { err += d })
+  c.on('error', (e) => { err += e.message })
+  const timer = setTimeout(() => c.kill(), 60_000)
+  c.on('close', (code) => { clearTimeout(timer); r({ url, extra: extra.join(' '), result: out.trim() || `ERR exit ${code} ${err.trim().slice(-200)}`, ms: Math.round(performance.now() - t0) }) })
+  c.stdin.end(js)
 })
 const add = addHost !== '-' ? [`--add-host=${hostName}:${addHost}`] : []
 const results = [await fetchIn(`http://${hostName}:6411/`, add), await fetchIn(`http://${hostName}:6412/`, add)]

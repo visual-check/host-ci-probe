@@ -82,9 +82,8 @@ mkdirSync(repo)
 const git = (args, cwd = repo) => run('git', ['-c', 'user.name=probe', '-c', 'user.email=probe@example.com', ...args], cwd)
 git(['init', '-q', '-b', 'main'])
 mkdirSync(path.join(repo, 'baselines'))
-for (const f of listed) writeFileSync(path.join(repo, 'baselines', f), readFileSync(path.join(dir, f)))
-mkdirSync(path.join(repo, 'deep', 'a'.repeat(100), 'b'.repeat(100)), { recursive: true })
-writeFileSync(path.join(repo, 'deep', 'a'.repeat(100), 'b'.repeat(100), `${synthetic.at(-2).id}.png`), png)
+// IDs over 200 characters go to their own repo below, so this round trip doesn't stop at Windows' MAX_PATH
+for (const f of listed.filter((f) => f.length <= 200)) writeFileSync(path.join(repo, 'baselines', f), readFileSync(path.join(dir, f)))
 writeFileSync(path.join(repo, 'visual-check.config.json'), '{\n  "browser": "chromium"\n}\n')
 writeFileSync(path.join(repo, 'SKILL.md'), '---\nname: visual-check\n---\n\nLine one.\nLine two.\n')
 const add = git(['add', '-A'])
@@ -102,6 +101,17 @@ const clone = (name, extra = []) => {
   }
   return out
 }
+// a baseline path over 260 characters: git for Windows needs core.longpaths for it
+const longRepo = path.join(work, 'long')
+mkdirSync(path.join(longRepo, 'apps', 'storybook', '.visual-check', 'baselines'), { recursive: true })
+git(['init', '-q', '-b', 'main'], longRepo)
+const longFile = path.join('apps', 'storybook', '.visual-check', 'baselines', `${synthetic.at(-2).id}.dark.webkit.png`)
+writeFileSync(path.join(longRepo, longFile), png)
+const longAdd = git(['add', '-A'], longRepo)
+const longAdd2 = longAdd.ok ? longAdd : git(['-c', 'core.longpaths=true', 'add', '-A'], longRepo)
+git(['-c', 'core.longpaths=true', 'commit', '-q', '-m', 'long'], longRepo)
+const longClone = (name, extra) => { const dst = path.join(work, name); const r = run('git', ['clone', '-q', ...extra, longRepo, dst]); return { ok: r.ok, err: r.err, present: existsSync(path.join(dst, longFile)) } }
+report.longPath = { fullPathChars: path.join(longRepo, longFile).length, inRepoChars: longFile.length, addDefault: longAdd.ok ? 'ok' : longAdd.err, addWithLongpaths: longAdd2.ok ? 'ok' : longAdd2.err, cloneDefault: longClone('long-default', []), cloneLongpaths: longClone('long-longpaths', ['-c', 'core.longpaths=true']) }
 report.git_roundtrip = { add: add.ok ? 'ok' : add.err, commit: commit.ok ? 'ok' : commit.err, tracked: tracked.length, defaultConfig: clone('clone-default'), longpaths: clone('clone-longpaths', ['-c', 'core.longpaths=true']) }
 // .gitattributes that force eol conversion: text=auto keeps binary detection, a bare `text` doesn't
 for (const [label, attr] of [['textAutoCrlf', '* text=auto eol=crlf\n'], ['forcedTextCrlf', '* text eol=crlf\n'], ['forcedTextPngBinary', '* text eol=crlf\n*.png binary\n']]) {

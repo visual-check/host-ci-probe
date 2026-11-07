@@ -174,9 +174,7 @@ jobs:
         run: |
           start=$(date +%s)
           npx -y "$FALLOW" viz --viz-format dot > ../out/fallow.dot 2> ../out/fallow.err; echo "fallow exit $? in $(( $(date +%s) - start )) s" | tee -a ../out/summary.txt
-          echo "lines $(wc -l < ../out/fallow.dot), with backslash $(grep -c -F "\\" ../out/fallow.dot), CRLF $(grep -c $'\r' ../out/fallow.dot)" | tee -a ../out/summary.txt
-          head -c 600 ../out/fallow.dot; echo
-          node -e "console.log(require('fs').readFileSync('../out/fallow.dot','utf8').match(/\"[^\"]*src[^\"]*\"/g)?.slice(0,5))" | tee -a ../out/summary.txt
+          node ../harness/fallow-summary.mjs ../out/fallow.dot | tee -a ../out/summary.txt
       - name: Storybook start and stop
         run: node harness/startstop-check.mjs "$PWD/mealdrop" | tee out/startstop.json
       - uses: actions/upload-artifact@v4
@@ -311,8 +309,6 @@ jobs:
           - { os: macos-15-intel, runtime: setup-docker-action, passes: "5", wk: "3", extra: "--memory 5g" }
           - { os: macos-26-intel, runtime: setup-docker-action, passes: "5", wk: "3", extra: "--memory 5g" }
           - { os: macos-15-intel, runtime: colima, passes: "5", wk: "3", extra: "--memory 5g" }
-          - { os: macos-15-intel, runtime: docker-desktop, passes: "3", wk: "2", extra: "--memory 5g" }
-          - { os: macos-15-intel, runtime: orbstack, passes: "3", wk: "2", extra: "--memory 5g" }
           - { os: macos-26, runtime: setup-docker-action, passes: "1", wk: "0", extra: "--memory 4g" }
           - { os: macos-26, runtime: colima-x86_64-tcg, passes: "1", wk: "0", extra: "--memory 4g --timeout 120000 --only components-button--default,components-badge--default,components-footer--default,components-header--default,components-restaurantcard--default" }
     steps:
@@ -366,6 +362,43 @@ jobs:
             out/runs/*/*.err
             out/kill/
             out/snapshots/
+          retention-days: 14
+
+  # Docker Desktop, the runtime most Windows and macOS developers have, on hosted runners
+  docker-desktop:
+    if: ${{ !contains(github.event.head_commit.message, 'only:') || contains(github.event.head_commit.message, 'only:dd') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-26-intel, windows-2025]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install the harness (JS only)
+        working-directory: harness
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Docker Desktop (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 45
+        run: mkdir -p out && bash harness/docker-desktop-mac.sh 2>&1 | tee out/docker-desktop.txt
+      - name: Docker Desktop (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 45
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force out | Out-Null; harness/docker-desktop-windows.ps1 *>&1 | Tee-Object out/docker-desktop.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dd-${{ matrix.os }}
+          path: out/
           retention-days: 14
 
   parity:

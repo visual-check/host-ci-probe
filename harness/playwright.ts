@@ -56,11 +56,19 @@ export async function launchPlaywright(o: PlaywrightOptions): Promise<Driver> {
   const exited = new Promise<string>((r) => { resolveExited = r })
   let disconnected = false
   const args = o.browser === 'chromium' ? ['--disable-skia-runtime-opts'] : []
-  const browser = await pw[o.browser].connect(`ws://127.0.0.1:${o.port}/`, {
-    exposeNetwork: '<loopback>',
-    headers: { 'x-playwright-launch-options': JSON.stringify({ args }) },
-    timeout: 60_000,
-  })
+  // A port published inside WSL can refuse connections from Windows for a moment after run-server listens
+  const c0 = performance.now()
+  let browser: Awaited<ReturnType<typeof pw.webkit.connect>> | undefined
+  for (let attempt = 1; ; attempt++) {
+    try {
+      browser = await pw[o.browser].connect(`ws://127.0.0.1:${o.port}/`, { exposeNetwork: '<loopback>', headers: { 'x-playwright-launch-options': JSON.stringify({ args }) }, timeout: 60_000 })
+      console.error(`connected on attempt ${attempt} after ${Math.round(performance.now() - c0)} ms`)
+      break
+    } catch (e) {
+      if (attempt >= 50 || !/ECONNREFUSED|ECONNRESET|socket hang up/.test(String(e))) throw e
+      await new Promise((r) => setTimeout(r, 200))
+    }
+  }
   browser.on('disconnected', () => { disconnected = true; if (!closing) resolveExited('browser disconnected') })
   const alive = () => withTimeout(browser.newContext().then((c) => c.close()), 3_000, 'probe').then(() => true, () => false)
   const probe = await browser.newPage()
