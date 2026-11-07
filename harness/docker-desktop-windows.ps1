@@ -10,6 +10,9 @@ $p = Start-Process $installer -ArgumentList 'install', '--quiet', '--accept-lice
 if (-not $p.WaitForExit(900000)) { Write-Output "installer still running after 15 min"; $p.Kill() }
 Write-Output "installer exit $($p.ExitCode) $(At)"
 Get-ChildItem 'C:\Program Files\Docker\Docker' -ErrorAction SilentlyContinue | Select-Object -First 5 Name | Format-Table | Out-String | Write-Output
+# The runner's own Moby service holds \\.\pipe\docker_engine, which Docker Desktop's API proxy needs
+Stop-Service docker -Force -ErrorAction Continue
+Get-Service docker | Select-Object Name, Status | Format-Table | Out-String | Write-Output
 Start-Process 'C:\Program Files\Docker\Docker\Docker Desktop.exe' -ErrorAction Continue
 $cli = 'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
 for ($i = 0; $i -lt 120; $i++) { & $cli --context desktop-linux info *> $null; if (-not $LASTEXITCODE) { break }; Start-Sleep 5 }

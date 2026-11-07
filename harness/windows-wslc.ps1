@@ -29,5 +29,8 @@ $env:VC_HOST_NAME = 'host.wslc.internal'
 $env:VC_HOST_ALIAS = ''
 $env:VC_MINIMAL_FLAGS = '1'
 node "$H/arms.mjs" http://127.0.0.1:6400 "$Out/runs" 3 'chromium-offline~wslc=--driver raw --network proxy --proxy-host 127.0.0.1 --offline' 'chromium-live~wslc=--driver raw --network proxy --proxy-host 127.0.0.1' | Tee-Object -Append "$Out/runs.log"
+Log 'kill check through wslc'
+node "$H/kill-check.mjs" http://127.0.0.1:6400 "$Out/kill" --network proxy --proxy-host 127.0.0.1 | Tee-Object -Append "$Out/kill.txt"
+wslc container list --all 2>&1 | Tee-Object -Append "$Out/kill.txt"
 Stop-Process -Id $serve.Id -Force
 node "$H/dedupe.mjs" "$Out/runs" "$Out/snapshots"

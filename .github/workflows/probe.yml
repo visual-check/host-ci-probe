@@ -198,7 +198,7 @@ jobs:
         include:
           - { os: windows-2025, mode: nat, full: true }
           - { os: windows-2025, mode: mirrored, full: true }
-          - { os: windows-2022, mode: nat, full: false }
+          - { os: windows-2022, mode: nat, full: true }
     defaults:
       run:
         shell: pwsh

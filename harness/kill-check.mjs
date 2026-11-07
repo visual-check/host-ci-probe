@@ -14,7 +14,12 @@ const H = path.dirname(fileURLToPath(import.meta.url))
 const win = process.platform === 'win32'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const docker = (args) => { try { return execFileSync(DOCKER[0], dockerArgs(args), { encoding: 'utf8' }).trim() } catch (e) { return `ERR ${String(e.stderr ?? e.message).trim().slice(0, 200)}` } }
-const running = (name) => docker(['ps', '-aq', '-f', `name=^/?${name}$`]).split('\n').filter((l) => l && !l.startsWith('ERR')).length
+// docker ps, or wslc's list where ps doesn't exist
+const running = (name) => {
+  let out = docker(['ps', '-a', '--format', '{{.Names}}'])
+  if (out.startsWith('ERR')) out = docker(['container', 'list', '--all'])
+  return out.split(/\r?\n/).filter((l) => l.split(/\s+/).includes(name)).length
+}
 const clients = () => {
   if (!win) return execFileSync('sh', ['-c', "pgrep -fl 'docker run' | grep -c vc-kill || true"], { encoding: 'utf8' }).trim()
   const ps = "Get-CimInstance Win32_Process | ? { $_.CommandLine -match 'vc-kill' -and $_.Name -match '^(docker|wsl)' } | % { $_.Name }"

@@ -57,7 +57,7 @@ async function start() {
   return { child, error: `not up: ${log.slice(-300)}` }
 }
 const methods = win
-  ? { 'child.kill()': (c) => c.kill(), 'taskkill /T /F': (c) => execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }) }
+  ? { 'child.kill()': (c) => c.kill(), 'taskkill /T /F': (c) => { try { execFileSync('taskkill', ['/PID', String(c.pid), '/T', '/F'], { stdio: 'ignore' }) } catch {} } }
   : { 'child.kill() SIGTERM': (c) => c.kill('SIGTERM'), 'group SIGTERM': (c) => process.kill(-c.pid, 'SIGTERM'), 'group SIGINT': (c) => process.kill(-c.pid, 'SIGINT') }
 report.stops = {}
 for (const [label, stop] of Object.entries(methods)) {
